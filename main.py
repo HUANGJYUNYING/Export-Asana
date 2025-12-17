@@ -353,6 +353,33 @@ for idx, t in enumerate(final_tasks):
         fname = fname[:100] + ".md"
     with open(os.path.join(sec_dir, fname), "w", encoding="utf-8") as f:
         f.write("\n".join(md))
+    # if config.ENABLE_MASKING:  # 只有開啟遮罩才需要驗證
+    preview_stories = []
+    if stories:
+        for s in stories:
+            if s["resource_subtype"] == "comment_added":
+                u = _mask(s.get("created_by", {}).get("name", "User"))
+                t_content = _mask(s["text"])
+                preview_stories.append(f"{u}: {t_content}")
+
+    # 呼叫寫回函式
+    utils.post_masking_preview(
+        client,
+        tid,  # 任務 ID (tid 已經在迴圈前面定義過了)
+        safe_title,  # 遮罩後標題
+        _mask(t.get("notes", "")),
+        preview_stories,
+    )
+"""
+    #  更新狀態為「待驗證」(Optional)
+    if MASK_FIELD_GID and MASK_PENDING_GID:
+        try:
+            tasks_api.update_task(
+                tid, {"custom_fields": {MASK_FIELD_GID: MASK_PENDING_GID}}
+            )
+        except Exception as e:
+            print(f"   ⚠️ 狀態更新失敗: {e}")
+"""
 
 if mode == "1":
     sync_mgr.save_sync_time(PROJECT_ID, curr_time_iso)
