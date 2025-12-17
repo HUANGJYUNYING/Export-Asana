@@ -78,9 +78,28 @@ def extract_names_from_context(full_text):
 
     names = set()
 
-    # 1. 抓 Header (提問人) - 允許中間有空白
+    # 1. 抓 Header (提問人 & 流言人) - 允許中間有空白
     names.update(re.findall(r"提問人姓名\s*[:：]\s*(.+)", full_text))
     names.update(re.findall(r"Line顯示名稱\s*[:：]\s*(.+)", full_text))
+    names.update(re.findall(r">\s*([^\(]+?)\s*\(\d{4}", full_text))
+
+    # 1.1 衍伸暱稱
+    derived_names = set()
+    for name in names:
+        name = name.strip()
+        # 規則：如果名字是 3 個字 (eg.王大強)，嘗試取後 2 字 (大強)
+        if len(name) == 3:
+            nickname = name[1:]  # 取第2字到最後
+            derived_names.add(nickname)
+
+        # 規則：如果名字是 2 個字 (李明)，且第1字是常見姓氏，嘗試取後1字 (明) -> 風險高，通常不建議
+        # 但如果是 Line 暱稱 (例如 "Cat Huang")，可以嘗試拆解空格
+        if " " in name:
+            parts = name.split(" ")
+            derived_names.update(parts)  # "Cat", "Huang" 都加進去
+
+    # 合併清單
+    names.update(derived_names)
 
     # 2. 抓對話紀錄 (優化版 Regex)
     # 支援: > **朱OO (2025... 或 > 朱OO (2025...
@@ -109,6 +128,10 @@ def extract_names_from_context(full_text):
         "開門紅",
         "飛鴿",
         "Asana",
+        "先生",
+        "小姐",
+        "你好",
+        "您好",
     }
 
     for n in names:
@@ -121,7 +144,7 @@ def extract_names_from_context(full_text):
 
 
 # ======================================================
-# 3. 遮罩執行 (Hybrid Masking)
+# 3. 遮罩執行
 # ======================================================
 def apply_masking(text, names_blacklist):
     """
@@ -181,7 +204,7 @@ def apply_masking(text, names_blacklist):
             "EMP_ID": OperatorConfig("replace", {"new_value": "[EMP_ID]"}),
             "DATE_TIME": OperatorConfig("keep"),
             "NRP": OperatorConfig("keep"),  # 國籍宗教保留
-            "URL": OperatorConfig("keep"),  # 網址保留 (前面已經處理過敏感連結)
+            "URL": OperatorConfig("keep"),  # 網址保留
         }
 
         anonymized_result = anonymizer.anonymize(

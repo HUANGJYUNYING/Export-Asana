@@ -1,1 +1,3 @@
 .env
+_pycache_
+asana_sync_record.json
