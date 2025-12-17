@@ -11,16 +11,12 @@ from asana.api.sections_api import SectionsApi
 # 引入模組
 import config
 import utils
-import masking
-import ocr
 from sync_manager import SyncManager
 
 # ==========================================
 # 1. 初始化設定
 # ==========================================
-print(f"🔒 遮罩模式: {'ON' if config.ENABLE_MASKING else 'OFF'}")
 print(f"📂 附件下載: {'ON' if config.DOWNLOAD_ATTACHMENTS else 'OFF'}")
-print(f"👁️ OCR 辨識: {'ON' if os.getenv('ENABLE_OCR') == 'True' else 'OFF'}")
 
 profiles = config.load_asana_profiles()
 if not profiles:
@@ -257,22 +253,10 @@ for idx, t in enumerate(final_tasks):
         except:
             full_subs.append({"meta": sm, "stories": [], "attachments": []})
 
-    # --- PII Masking Setup ---
-    if config.ENABLE_MASKING:
-        full_text = (
-            (t.get("notes") or "")
-            + " "
-            + " ".join([s.get("text") or "" for s in stories])
-        )
-        pii_names = masking.extract_names_from_context(full_text)
-        _mask = lambda txt: masking.apply_masking(txt, pii_names)
-    else:
-        _mask = lambda txt: txt
-
     # ----------------------------------------------------------
     # 📝 Markdown Gen (修正後的邏輯)
     # ----------------------------------------------------------
-    safe_title = _mask(t["name"])
+    safe_title = t.get("name") or "untitled"
     c_at = t["created_at"][:10]
     exp = (
         datetime.datetime.strptime(c_at, "%Y-%m-%d") + datetime.timedelta(days=365)
@@ -295,7 +279,7 @@ for idx, t in enumerate(final_tasks):
         for cf in t["custom_fields"]:
             if cf.get("display_value"):
                 md.append(
-                    f"cf_{utils.clean_filename(cf['name'])}: \"{_mask(cf['display_value'])}\""
+                    f"cf_{utils.clean_filename(cf['name'])}: \"{cf['display_value']}\""
                 )
     md.append("---\n")
 
@@ -307,31 +291,24 @@ for idx, t in enumerate(final_tasks):
         md.append("- **自訂欄位**:")
         for cf in t["custom_fields"]:
             if cf.get("display_value"):
-                md.append(f"  - {cf['name']}: `{_mask(cf['display_value'])}`")
+                md.append(f"  - {cf['name']}: `{cf['display_value']}`")
 
-    md.append(f"\n## 📝 任務描述\n{_mask(t.get('notes')) or '*(無)*'}")
+    md.append(f"\n## 📝 任務描述\n{t.get('notes') or '*(無)*'}")
 
     # (A) 任務附件 (扣除留言附件)
     if task_attachments:
         md.append("\n## 📎 任務附件")
         for a in task_attachments:
-            display_name = _mask(a["name"])
-            link, path = utils.process_attachment_link(a, tid, att_dir)
-            md.append(f"- {link.replace(f'[{a['name']}]', f'[{display_name}]')}")
-
-            if path:
-                ocr_text = ocr.extract_text_from_image(path)
-                if ocr_text:
-                    safe_ocr = _mask(ocr_text)
-                    md.append(f"  > 🖼️ **OCR**: {safe_ocr.replace(chr(10), ' ')}")
+            link, _ = utils.process_attachment_link(a, tid, att_dir)
+            md.append(f"- {link}")
 
     # (B) 討論紀錄 (含附件)
     if stories:
         md.append("\n## 💬 討論紀錄")
         for s in stories:
             if s["resource_subtype"] == "comment_added":
-                u = _mask(s.get("created_by", {}).get("name", "User"))
-                txt = _mask(s["text"])
+                u = s.get("created_by", {}).get("name", "User")
+                txt = s["text"]
                 md.append(
                     f"> **{u} ({s['created_at'][:10]})**: {txt.replace(chr(10), '  '+chr(10))}"
                 )
@@ -340,19 +317,8 @@ for idx, t in enumerate(final_tasks):
                 s_gid = s["gid"]
                 if s_gid in story_attachment_map:
                     for sa in story_attachment_map[s_gid]:
-                        dname = _mask(sa["name"])
-                        link, path = utils.process_attachment_link(sa, tid, att_dir)
-                        md.append(
-                            f"  > 📎 {link.replace(f'[{sa['name']}]', f'[{dname}]')}"
-                        )
-
-                        if path:
-                            ocr_text = ocr.extract_text_from_image(path)
-                            if ocr_text:
-                                safe_ocr = _mask(ocr_text)
-                                md.append(
-                                    f"    > 🖼️ **OCR**: {safe_ocr.replace(chr(10), ' ')}"
-                                )
+                        link, _ = utils.process_attachment_link(sa, tid, att_dir)
+                        md.append(f"  > 📎 {link}")
                 md.append("")
 
     # (C) 子任務
@@ -360,31 +326,22 @@ for idx, t in enumerate(final_tasks):
         md.append("\n---\n## 🔨 子任務")
         for i, item in enumerate(full_subs, 1):
             s = item["meta"]
-            md.append(f"### {i}. {_mask(s['name'])}")
+            md.append(f"### {i}. {s['name']}")
             if s.get("notes"):
-                md.append(f"  > {_mask(s['notes']).replace(chr(10), chr(10)+'  >')}\n")
+                md.append(f"  > {s['notes'].replace(chr(10), chr(10)+'  >')}\n")
 
             if item["attachments"]:
                 md.append("  - **附件**:")
                 for sa in item["attachments"]:
-                    dname = _mask(sa["name"])
-                    link, path = utils.process_attachment_link(sa, s["gid"], att_dir)
-                    md.append(f"    - {link.replace(f'[{sa['name']}]', f'[{dname}]')}")
-
-                    if path:
-                        ocr_text = ocr.extract_text_from_image(path)
-                        if ocr_text:
-                            safe_ocr = _mask(ocr_text)
-                            md.append(
-                                f"      > 🖼️ **OCR**: {safe_ocr.replace(chr(10), ' ')}"
-                            )
+                    link, _ = utils.process_attachment_link(sa, s["gid"], att_dir)
+                    md.append(f"    - {link}")
 
             if item["stories"]:
                 md.append("  - **留言**:")
                 for sc in item["stories"]:
                     if sc["resource_subtype"] == "comment_added":
-                        su = _mask(sc.get("created_by", {}).get("name", "User"))
-                        stxt = _mask(sc["text"])
+                        su = sc.get("created_by", {}).get("name", "User")
+                        stxt = sc["text"]
                         md.append(
                             f"    - `{sc['created_at'][:10]}` **{su}**: {stxt.replace(chr(10), ' ')}"
                         )
