@@ -4,6 +4,8 @@ asana>=5.0.0,<6.0.0
 # Azure OpenAI / OpenAI API (1.x 支援 Azure)
 openai>=1.51.0,<2.0.0
 
+# HTTP requests
+requests>=2.31.0,<3.0.0
+
 # 環境變數載入
 python-dotenv>=1.0.0,<2.0.0
-

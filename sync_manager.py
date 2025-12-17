@@ -1,6 +1,5 @@
 import os
 import json
-import datetime
 
 SYNC_RECORD_FILE = "asana_sync_record.json"
 
