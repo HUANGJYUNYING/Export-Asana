@@ -15,7 +15,10 @@ def ensure_dict(obj):
 
 
 def clean_filename(name):
-    """清理檔名"""
+    """
+    清理檔名: 移除不合法字元，限制長度
+    """
+
     if not name:
         return "untitled"
     name = re.sub(r'[\\/*?:"<>|]', "_", name).replace("\n", "").strip()
@@ -24,11 +27,16 @@ def clean_filename(name):
 
 def process_attachment_link(att, parent_gid, save_dir):
     """
-    處理附件下載邏輯
+    下載附件並回傳資訊
+
+    Args:
+        att (dict): 附件物件
+        parent_gid (str): 父任務 GID
+        save_dir (str): 存檔目錄
 
     Returns:
         tuple: (Markdown連結字串, 本地檔案絕對路徑)
-        如果沒有下載或下載失敗，本地路徑會回傳 None
+        * 如果沒下載或失敗，本地路徑回傳 None
     """
     att = ensure_dict(att)
     a_name = att.get("name", "unknown")
@@ -38,7 +46,7 @@ def process_attachment_link(att, parent_gid, save_dir):
     # 檢查全域設定是否開啟下載
     if config.DOWNLOAD_ATTACHMENTS and a_url and save_dir:
         safe_fname = clean_filename(a_name)
-        # 唯一檔名
+        # 命名格式：{ParentID}_{AttachmentID}_{FileName}
         unique_fname = f"{parent_gid}_{a_gid}_{safe_fname}"
         local_path = os.path.join(save_dir, unique_fname)
 
@@ -72,7 +80,7 @@ def post_masking_preview(
     masked_stories: List[str],
 ) -> None:
     """
-    將遮罩結果貼回 Asana 任務留言板供驗證 (新版 OpenAPI SDK)
+    將遮罩結果回傳至 Asana 任務留言板供驗證
 
     Args:
         client: 已初始化的 ApiClient
@@ -85,37 +93,41 @@ def post_masking_preview(
     if os.getenv("ENABLE_UPLOAD_PREVIEW", "False") != "True":
         return
 
-    # 1. 組合 HTML 預覽內容
-    html_body = "<body>"
-    html_body += "<strong>🔒 [系統自動生成] 個資遮罩驗證預覽</strong><br><br>"
+    # 1. 組合預覽內容 (Markdown)
+    lines = []
+    lines.append("🔒 **[系統自動生成] 個資遮罩驗證預覽**")
+    lines.append("")
 
-    html_body += "<strong>--- 標題 ---</strong><br>"
-    html_body += f"{masked_title}<br><br>"
+    lines.append(f"**--- 標題 ---**\n{masked_title}")
+    lines.append("")
 
-    html_body += "<strong>--- 描述 (前 200 字) ---</strong><br>"
+    # 描述截斷
     preview_notes = (
-        masked_notes[:200] + "..." if len(masked_notes) > 200 else masked_notes
+        masked_notes[:300] + "..." if len(masked_notes) > 300 else masked_notes
     )
-    html_body += f"{preview_notes.replace(chr(10), '<br>')}<br><br>"
+    lines.append(f"**--- 描述 (前 300 字) ---**\n{preview_notes}")
+    lines.append("")
 
-    html_body += "<strong>--- 敏感留言抽樣 ---</strong><br>"
-    for s in masked_stories[:3]:  # 只列出前三則避免洗版
-        html_body += f"<em>{s}</em><br>"
+    # 留言抽樣
+    if masked_stories:
+        lines.append("**--- 敏感留言抽樣 ---**")
+        for s in masked_stories[:3]:
+            lines.append(f"> {s}")
+        lines.append("")
 
-    html_body += (
-        "<br><em>(請確認以上內容是否已去除敏感個資，若無誤請按讚或標記已驗證)</em>"
-    )
-    html_body += "</body>"
+    lines.append("_(請確認以上內容是否已去除敏感個資，若無誤請按讚或標記已驗證)_")
+
+    final_text = "\n".join(lines)
 
     try:
         stories_api = StoriesApi(client)
 
-        request_body = {"data": {"html_text": html_body, "is_pinned": False}}
-
-        request_opts = {}
+        request_body = {
+            "data": {"text": final_text, "is_pinned": False}  # 使用純文字/Markdown 模式
+        }
 
         stories_api.create_story_for_task(
-            task_gid=str(task_gid), body=request_body, opts=request_opts
+            task_gid=str(task_gid), body=request_body, opts={}
         )
         print(f"   📤 已上傳遮罩預覽至任務: {task_gid}")
 

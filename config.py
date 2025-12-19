@@ -19,6 +19,7 @@ AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
 AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION")
 AZURE_OPENAI_CHAT_DEPLOYMENT = os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT")
+ENABLE_LLM_ANALYSIS = str_to_bool(os.getenv("ENABLE_LLM_ANALYSIS", "True"))
 
 
 # 讀取 Profiles
@@ -34,3 +35,9 @@ def load_asana_profiles():
         profiles.append({"name": name, "token": token, "project": project})
         idx += 1
     return profiles
+
+
+# --- 路徑設定(本地測試用) ---
+BASE_DIR = os.path.join(os.path.expanduser("~"), "Downloads", "Asana_Knowledge_Base")
+RAW_DIR = os.path.join(BASE_DIR, "raw_data")
+PROCESSED_DIR = os.path.join(BASE_DIR, "processed_data")

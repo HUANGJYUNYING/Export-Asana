@@ -1,157 +1,132 @@
-# 檔案用途：負責將任務上下文轉換為 Markdown 與遮罩預覽資料（純轉換，無 I/O）。
-
+# 檔案用途：負責將任務上下文轉換為 Markdown 與遮罩預覽資料（純轉換，無 I/O）
 import datetime
-from typing import Callable, List, Optional, Tuple
-
+import os
 import utils
-from models import TaskRenderContext
 
 
-def ensure_mask_fn(mask_fn: Optional[Callable[[str], str]]) -> Callable[[str], str]:
+def render_markdown(data, mask_func):
     """
-    產生可用遮罩函式；未提供時回傳直通函式。
-    採用具名內部函式，便於除錯與追蹤呼叫堆疊。
-
-    Args:
-        mask_fn (Callable[[str], str] | None): 可選的遮罩函式。
-
-    Returns:
-        Callable[[str], str]: 實際可呼叫的遮罩函式。
-
-    Raises:
-        TypeError: 當 mask_fn 不是可呼叫物件時。
+    輸入:
+      data: 包含 metadata, stories, attachments 等的字典 (from JSON)
+      mask_func: 已綁定 context 的遮罩函式
+    回傳:
+      List[str]: Markdown 的每一行
     """
-    if mask_fn is None:
+    t = data["metadata"]
 
-        def _passthrough(text: str) -> str:
-            return text or ""
+    # 1. Metadata
+    safe_title = mask_func(t["name"])
+    c_at = t["created_at"][:10]
+    exp = (
+        datetime.datetime.strptime(c_at, "%Y-%m-%d") + datetime.timedelta(days=365)
+    ).strftime("%Y-%m-%d")
+    status_str = "completed" if t.get("completed") else "active"
 
-        return _passthrough
-    if not callable(mask_fn):
-        raise TypeError("mask_fn 必須為可呼叫物件")
+    # 提取自訂欄位
+    cf_data = {}
+    if t.get("custom_fields"):
+        for cf in t["custom_fields"]:
+            if cf.get("display_value"):
+                cf_data[cf["name"]] = cf["display_value"]
 
-    def _mask(text: str) -> str:
-        return mask_fn(text or "")
-
-    return _mask
-
-
-def render_markdown(
-    ctx: TaskRenderContext,
-    mask_fn: Optional[Callable[[str], str]] = None,
-) -> Tuple[List[str], str, str, List[str]]:
-    """
-    建立任務的 Markdown 內容與遮罩預覽資料。
-
-    Args:
-        ctx (TaskRenderContext): 渲染所需的上下文資料。
-        mask_fn (Callable[[str], str] | None): 遮罩函式，無則直通。
-
-    Returns:
-        Tuple[List[str], str, str, List[str]]: (Markdown 行列表, 遮罩後標題, 遮罩後描述, 遮罩留言預覽)。
-    """
-    mask = ensure_mask_fn(mask_fn)
-
-    safe_title = ctx.task.get("name") or "untitled"
-    c_at = ctx.task["created_at"][:10]
-    exp = ctx.task.get("expiry_date") or (
-        (datetime.datetime.strptime(c_at, "%Y-%m-%d") + datetime.timedelta(days=365))
-        .date()
-        .isoformat()
-    )
-    status_str = "completed" if ctx.task.get("completed") else "active"
-
-    md: List[str] = [
+    md = [
         "---",
         "type: task",
-        f"gid: {ctx.task['gid']}",
+        f"gid: {t['gid']}",
         f'title: "{utils.clean_filename(safe_title)}"',
         f"status: {status_str}",
         f"created_date: {c_at}",
-        f"modified_at: {ctx.task.get('modified_at')}",
+        f"modified_at: {t.get('modified_at')}",
         f"expiry_date: {exp}",
-        f'section: "{ctx.section_name}"',
+        f"section: \"{data['section_name']}\"",
     ]
-
-    if ctx.task.get("custom_fields"):
-        for cf in ctx.task["custom_fields"]:
-            if cf.get("display_value"):
-                md.append(
-                    f"cf_{utils.clean_filename(cf['name'])}: \"{cf['display_value']}\""
-                )
+    for k, v in cf_data.items():
+        md.append(f'cf_{utils.clean_filename(k)}: "{mask_func(v)}"')
     md.append("---\n")
 
-    md.append(f"# {'✅' if ctx.task['completed'] else '🔲'} {safe_title}")
-    md.append(
-        f"\n## 📌 基本資訊\n- **連結**: [Asana](https://app.asana.com/0/{ctx.project_id}/{ctx.task['gid']})"
-    )
-    if ctx.task.get("custom_fields"):
+    # 2. 標題與基本資訊
+    md.append(f"# {'✅' if t['completed'] else '🔲'} {safe_title}")
+    # 這裡的 PROJECT_ID 無法直接取得，可以從 permalink 判斷或忽略連結
+    # 為了簡化，若 metadata 沒有 permalink_url，可以拼出一個通用的連結
+    md.append(f"\n## 📌 基本資訊\n- **建立日期**: {c_at}")
+    if cf_data:
         md.append("- **自訂欄位**:")
-        for cf in ctx.task["custom_fields"]:
-            if cf.get("display_value"):
-                md.append(f"  - {cf['name']}: `{cf['display_value']}`")
+        for k, v in cf_data.items():
+            md.append(f"  - {k}: `{mask_func(v)}`")
 
-    md.append(f"\n## 📝 任務描述\n{ctx.task.get('notes') or '*(無)*'}")
+    # 3. 描述
+    md.append(f"\n## 📝 任務描述\n{mask_func(t.get('notes')) or '*(無)*'}")
 
-    if ctx.task_attachments:
+    # Helper: 附件渲染
+    def _render_atts(att_list, indent=""):
+        lines = []
+        for a in att_list:
+            dname = mask_func(a["name"])
+            # 建立相對路徑連結: ../attachments/filename
+            if a.get("local_path"):
+                fname = os.path.basename(a["local_path"])
+                link = f"[{dname}](../attachments/{fname})"
+            else:
+                link = f"[{dname} (未下載)]({a['download_url']})"
+
+            lines.append(f"{indent}- {link}")
+
+            # 顯示 LLM 分析結果 (原 ocr_text)
+            if a.get("ocr_text"):
+                # 遮罩分析結果並縮排
+                safe_ocr = mask_func(a["ocr_text"]).replace("\n", " ")
+                lines.append(f"{indent}  > 🖼️ **內容分析**: {safe_ocr}")
+        return lines
+
+    # 4. 任務附件 (扣除留言附件後的)
+    if data.get("task_attachments"):
         md.append("\n## 📎 任務附件")
-        for a in ctx.task_attachments:
-            link, _ = utils.process_attachment_link(a, ctx.task["gid"], ctx.att_dir)
-            md.append(f"- {link}")
+        md.extend(_render_atts(data["task_attachments"]))
 
-    if ctx.stories:
+    # 5. 討論紀錄 (含附件歸位)
+    if data.get("stories"):
         md.append("\n## 💬 討論紀錄")
-        for s in ctx.stories:
+        story_att_map = data.get("story_attachment_map", {})
+
+        for s in data["stories"]:
             if s["resource_subtype"] == "comment_added":
-                u = s.get("created_by", {}).get("name", "User")
-                txt = s["text"]
+                u = mask_func(s.get("created_by", {}).get("name", "User"))
+                txt = mask_func(s["text"])
                 md.append(
                     f"> **{u} ({s['created_at'][:10]})**: {txt.replace(chr(10), '  '+chr(10))}"
                 )
 
+                # 檢查此留言是否有附件
                 s_gid = s["gid"]
-                if s_gid in ctx.story_attachment_map:
-                    for sa in ctx.story_attachment_map[s_gid]:
-                        link, _ = utils.process_attachment_link(
-                            sa, ctx.task["gid"], ctx.att_dir
-                        )
-                        md.append(f"  > 📎 {link}")
+                if s_gid in story_att_map:
+                    md.extend(_render_atts(story_att_map[s_gid], indent="  "))
+
                 md.append("")
 
-    if ctx.subtasks:
+    # 6. 子任務
+    if data.get("subtasks"):
         md.append("\n---\n## 🔨 子任務")
-        for i, item in enumerate(ctx.subtasks, 1):
+        for i, item in enumerate(data["subtasks"], 1):
             s = item["meta"]
-            md.append(f"### {i}. {s['name']}")
+            md.append(f"### {i}. {mask_func(s['name'])}")
             if s.get("notes"):
-                md.append(f"  > {s['notes'].replace(chr(10), chr(10)+'  >')}\n")
+                md.append(
+                    f"  > {mask_func(s['notes']).replace(chr(10), chr(10)+'  >')}\n"
+                )
 
-            if item["attachments"]:
+            # 子任務附件
+            if item.get("attachments"):
                 md.append("  - **附件**:")
-                for sa in item["attachments"]:
-                    link, _ = utils.process_attachment_link(sa, s["gid"], ctx.att_dir)
-                    md.append(f"    - {link}")
+                md.extend(_render_atts(item["attachments"], indent="    "))
 
-            if item["stories"]:
+            # 子任務留言
+            if item.get("stories"):
                 md.append("  - **留言**:")
                 for sc in item["stories"]:
                     if sc["resource_subtype"] == "comment_added":
-                        su = sc.get("created_by", {}).get("name", "User")
-                        stxt = sc["text"]
-                        md.append(
-                            f"    - `{sc['created_at'][:10]}` **{su}**: {stxt.replace(chr(10), ' ')}"
-                        )
+                        su = mask_func(sc.get("created_by", {}).get("name", "U"))
+                        stxt = mask_func(sc["text"])
+                        md.append(f"    - **{su}**: {stxt.replace(chr(10), ' ')}")
             md.append("")
 
-    preview_stories: List[str] = []
-    if ctx.stories:
-        for s in ctx.stories:
-            if s["resource_subtype"] == "comment_added":
-                u = mask(s.get("created_by", {}).get("name", "User"))
-                t_content = mask(s["text"])
-                preview_stories.append(f"{u}: {t_content}")
-
-    masked_title = mask(safe_title)
-    masked_notes = mask(ctx.task.get("notes", ""))
-
-    return md, masked_title, masked_notes, preview_stories
+    return md

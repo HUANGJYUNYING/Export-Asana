@@ -1,7 +1,7 @@
 # 檔案用途：集中定義資料模型與型別（無 I/O、副作用）。
 
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Dict, List, Optional, Any
 
 from asana.api.attachments_api import AttachmentsApi
 from asana.api.projects_api import ProjectsApi
@@ -52,3 +52,14 @@ class AsanaApis:
     stories: StoriesApi
     attachments: AttachmentsApi
     sections: SectionsApi
+
+
+@dataclass
+class AttachmentData:
+    """附件的標準化資料結構 (含 LLM 分析結果)"""
+
+    gid: str
+    name: str
+    download_url: str
+    local_path: Optional[str] = None  # 下載後的本地路徑
+    ocr_text: Optional[str] = None  # LLM 分析結果

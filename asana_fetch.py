@@ -1,17 +1,53 @@
 # 檔案用途：封裝 Asana API 相關取數邏輯（含網路/I/O 副作用）。
 
 from typing import Dict, List, Tuple
-
 from asana.rest import ApiException
 
 import utils
-from models import AsanaApis
+from models import AsanaApis, AttachmentData
+import config
+import llm_processor
 
 
-def fetch_task_context(
-    task_gid: str,
-    apis: AsanaApis,
-) -> Tuple[List[dict], Dict[str, List[dict]], List[dict], List[dict]]:
+def _process_attachments_with_llm(
+    api_attachments: List[dict], parent_gid: str, save_dir: str
+) -> List[AttachmentData]:
+    """
+    內部輔助函式：批次處理附件列表
+    動作：1. 下載檔案  2. 呼叫 GPT-4o-mini 分析  3. 封裝資料
+    """
+    processed_list = []
+
+    for att in api_attachments:
+        att = utils.ensure_dict(att)
+
+        # 1. 下載檔案 (並取得本地路徑)
+        # utils.process_attachment_link 會回傳 (markdown_link, local_path)
+        _, local_path = utils.process_attachment_link(att, parent_gid, save_dir)
+
+        # 2. 執行 LLM 分析 (僅當有本地檔案且設定開啟時)
+        analysis_result = None
+        if local_path and config.DOWNLOAD_ATTACHMENTS:
+            # 呼叫 GPT-4o-mini
+            analysis_result = llm_processor.analyze_image(local_path)
+
+        # 3. 封裝資料為 AttachmentData 物件，讓後續的流程直接用 .ocr_text 拿到 AI 的分析結果
+        processed_list.append(
+            AttachmentData(
+                gid=att["gid"],
+                name=att["name"],
+                download_url=att.get("download_url"),
+                local_path=local_path,
+                ocr_text=analysis_result,
+            )
+        )
+
+    return processed_list
+
+
+def _process_attachments_with_llm(
+    api_attachments: List[dict], parent_gid: str, save_dir: str
+) -> List[AttachmentData]:
     """
     取得單一任務的留言、附件、留言附件對應、子任務完整內容。
 
@@ -23,6 +59,54 @@ def fetch_task_context(
         Tuple[List[dict], Dict[str, List[dict]], List[dict], List[dict]]:
             (task_attachments, story_attachment_map, stories, full_subs)
     """
+    processed_list = []
+
+    for att in api_attachments:
+        att = utils.ensure_dict(att)
+
+        # 1. 下載檔案 (並取得本地路徑)
+        # utils.process_attachment_link 會回傳 (markdown_link, local_path)
+        # 這裡我們只需要 local_path
+        _, local_path = utils.process_attachment_link(att, parent_gid, save_dir)
+
+        # 2. 執行 LLM 分析 (僅當有本地檔案且設定開啟時)
+        analysis_result = None
+        if local_path and config.DOWNLOAD_ATTACHMENTS:
+            # 呼叫 GPT-4o-mini
+            analysis_result = llm_processor.analyze_image(local_path)
+
+        # 3. 封裝資料為 AttachmentData 物件，讓後續的流程能用 .ocr_text 拿到 AI 的分析結果
+        processed_list.append(
+            AttachmentData(
+                gid=att["gid"],
+                name=att["name"],
+                download_url=att.get("download_url"),
+                local_path=local_path,
+                ocr_text=analysis_result,  # 這裡存的是 LLM 的分析結果
+            )
+        )
+
+    return processed_list
+
+
+def fetch_task_context(
+    task_gid: str, apis: AsanaApis, att_dir: str  # 參數：附件儲存目錄 (用途:下載附件)
+) -> Tuple[
+    List[AttachmentData], Dict[str, List[AttachmentData]], List[dict], List[dict]
+]:
+    """
+    取得單一任務的完整上下文 (Context)，並完成所有前處理。
+
+    Returns:
+        task_attachments (List[AttachmentData]): 主任務附件
+        story_attachment_map (Dict): 留言附件對照表
+        stories (List[dict]): 留言列表
+        full_subs (List[dict]): 子任務詳情
+    """
+
+    # ==========================================
+    # 1. 抓取留言
+    # ==========================================
     stories = [
         utils.ensure_dict(s)
         for s in apis.stories.get_stories_for_task(
@@ -31,6 +115,10 @@ def fetch_task_context(
         )
     ]
 
+    # ==========================================
+    # 2. 抓取附件 & 歸位 & LLM 分析
+    # ==========================================
+    # 先抓取所有附件的 Metadata
     all_raw_attachments = [
         utils.ensure_dict(a)
         for a in apis.attachments.get_attachments_for_object(
@@ -41,31 +129,52 @@ def fetch_task_context(
         )
     ]
 
-    task_attachments: List[dict] = []
-    story_attachment_map: Dict[str, List[dict]] = {}
+    # 分類：這張圖屬於 Task 還是 Story？
+    task_atts_raw: List[dict] = []
+    story_atts_map_raw: Dict[str, List[dict]] = {}
+
     for att in all_raw_attachments:
         p_type = att.get("parent", {}).get("resource_type")
         p_gid = att.get("parent", {}).get("gid")
-        if p_type == "story" and p_gid:
-            story_attachment_map.setdefault(p_gid, []).append(att)
-        else:
-            task_attachments.append(att)
 
+        if p_type == "story" and p_gid:
+            story_atts_map_raw.setdefault(p_gid, []).append(att)
+        else:
+            task_atts_raw.append(att)
+
+    # 處理任務附件(下載 + LLM)
+    task_attachments = _process_attachments_with_llm(task_atts_raw, task_gid, att_dir)
+
+    # 處理留言附件 (批次處理 map 中的每一組)
+    story_attachment_map = {}
+    for s_gid, att_list in story_atts_map_raw.items():
+        story_attachment_map[s_gid] = _process_attachments_with_llm(
+            att_list, task_gid, att_dir
+        )
+
+    # ==========================================
+    # 3. 抓取子任務
+    # ==========================================
     subs_meta = [
         utils.ensure_dict(s)
         for s in apis.tasks.get_subtasks_for_task(
             task_gid, opts={"opt_fields": "gid,name"}
         )
     ]
+
     full_subs: List[dict] = []
     for sm in subs_meta:
         try:
+            # 3-1. 子任務詳情
             sd = utils.ensure_dict(
                 apis.tasks.get_task(
                     sm["gid"],
-                    opts={"opt_fields": "gid,name,completed,notes,due_on"},
+                    opts={
+                        "opt_fields": "gid,name,completed,notes,due_on,custom_fields.name,custom_fields.display_value"
+                    },
                 )
             )
+            # 3-2. 子任務留言
             ss = [
                 utils.ensure_dict(s)
                 for s in apis.stories.get_stories_for_task(
@@ -75,19 +184,19 @@ def fetch_task_context(
                     },
                 )
             ]
-            sa = [
+            # 3-3. 子任務附件 (也要下載 + LLM)
+            sa_raw = [
                 utils.ensure_dict(a)
                 for a in apis.attachments.get_attachments_for_object(
                     parent=sm["gid"], opts={"opt_fields": "gid,name,download_url"}
                 )
             ]
-            full_subs.append({"meta": sd, "stories": ss, "attachments": sa})
-        except ApiException as e:
-            print(
-                f"⚠️ 抓取子任務失敗 {sm.get('gid')}: {getattr(e, 'status', '')} {getattr(e, 'reason', e)}"
-            )
-            full_subs.append({"meta": sm, "stories": [], "attachments": []})
-        except Exception as e:
+            sa_processed = _process_attachments_with_llm(sa_raw, sm["gid"], att_dir)
+
+            # 這裡 subtask 的結構稍微不同，attachments 欄位存放的是處理過的 AttachmentData 列表
+            full_subs.append({"meta": sd, "stories": ss, "attachments": sa_processed})
+
+        except (ApiException, Exception) as e:
             print(f"⚠️ 抓取子任務失敗 {sm.get('gid')}: {e}")
             full_subs.append({"meta": sm, "stories": [], "attachments": []})
 
