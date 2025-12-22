@@ -41,3 +41,4 @@ def load_asana_profiles():
 BASE_DIR = os.path.join(os.path.expanduser("~"), "Downloads", "Asana_Knowledge_Base")
 RAW_DIR = os.path.join(BASE_DIR, "raw_data")
 PROCESSED_DIR = os.path.join(BASE_DIR, "processed_data")
+QA_DIR = os.path.join(BASE_DIR, "qa_data")

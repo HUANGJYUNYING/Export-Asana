@@ -72,13 +72,7 @@ def process_attachment_link(att, parent_gid, save_dir):
         return (f"[{a_name}]({a_url})", None)
 
 
-def post_masking_preview(
-    client: ApiClient,
-    task_gid: str,
-    masked_title: str,
-    masked_notes: str,
-    masked_stories: List[str],
-) -> None:
+def post_masking_preview(client, task_gid, markdown_content):
     """
     將遮罩結果回傳至 Asana 任務留言板供驗證
 
@@ -93,43 +87,26 @@ def post_masking_preview(
     if os.getenv("ENABLE_UPLOAD_PREVIEW", "False") != "True":
         return
 
-    # 1. 組合預覽內容 (Markdown)
-    lines = []
-    lines.append("🔒 **[系統自動生成] 個資遮罩驗證預覽**")
-    lines.append("")
+    # 加上一個簡單的 Header 區隔，避免混淆，但保留完整內容
+    header = "🔒 **[系統自動生成] 完整資料處理預覽 (含個資遮罩與OCR)**\n\n"
+    final_text = header + markdown_content
 
-    lines.append(f"**--- 標題 ---**\n{masked_title}")
-    lines.append("")
-
-    # 描述截斷
-    preview_notes = (
-        masked_notes[:300] + "..." if len(masked_notes) > 300 else masked_notes
-    )
-    lines.append(f"**--- 描述 (前 300 字) ---**\n{preview_notes}")
-    lines.append("")
-
-    # 留言抽樣
-    if masked_stories:
-        lines.append("**--- 敏感留言抽樣 ---**")
-        for s in masked_stories[:3]:
-            lines.append(f"> {s}")
-        lines.append("")
-
-    lines.append("_(請確認以上內容是否已去除敏感個資，若無誤請按讚或標記已驗證)_")
-
-    final_text = "\n".join(lines)
+    # Asana 留言有字數限制 (約 65535 字元)
+    # 為了防止 API 報錯導致程式中斷，做一個安全截斷
+    if len(final_text) > 60000:
+        final_text = final_text[:60000] + "\n\n⚠️ ...(內容過長已截斷)..."
 
     try:
         stories_api = StoriesApi(client)
 
-        request_body = {
-            "data": {"text": final_text, "is_pinned": False}  # 使用純文字/Markdown 模式
-        }
+        # Body
+        request_body = {"data": {"text": final_text, "is_pinned": False}}
 
+        # API Call
         stories_api.create_story_for_task(
             task_gid=str(task_gid), body=request_body, opts={}
         )
-        print(f"   📤 已上傳遮罩預覽至任務: {task_gid}")
+        print(f"   📤 已上傳完整預覽至任務: {task_gid}")
 
     except Exception as e:
         print(f"   ❌ 上傳預覽失敗: {e}")

@@ -2,6 +2,7 @@
 import datetime
 import os
 import utils
+import re
 
 
 def render_markdown(data, mask_func):
@@ -13,6 +14,60 @@ def render_markdown(data, mask_func):
       List[str]: Markdown 的每一行
     """
     t = data["metadata"]
+    # 0. lookup table
+    # Key: asset_id (gid), Value: attachment_data
+    att_lookup = {}
+
+    # 追蹤已被使用的附件 GID
+    rendered_gids = set()
+
+    # 收集所有附件
+    all_atts = []
+    if data.get("task_attachments"):
+        all_atts.extend(data["task_attachments"])
+    if data.get("story_attachment_map"):
+        for alist in data["story_attachment_map"].values():
+            all_atts.extend(alist)
+    if data.get("subtasks"):
+        for sub in data["subtasks"]:
+            if sub.get("attachments"):
+                all_atts.extend(sub["attachments"])
+
+    for a in all_atts:
+        att_lookup[a["gid"]] = a
+
+    # 產生圖片+OCR 的 Markdown 區塊
+
+    def get_attachment_markdown(gid, indent_level=""):
+        """
+        根據 GID 產生圖片連結與 OCR 文字
+        格式：
+        > 📎 [檔名](路徑)
+        > 🖼️ LLM分析: ...
+        """
+        if gid not in att_lookup:
+            return None  # 找不到對應附件
+
+        # 標記此附件已被使用
+        rendered_gids.add(gid)
+
+        a = att_lookup[gid]
+        dname = mask_func(a["name"])
+
+        # 處理路徑 (這裡先產生相對路徑，process_data.py 會再修整)
+        if a.get("local_path"):
+            fname = os.path.basename(a["local_path"])
+            link_md = f"[{dname}](../attachments/{fname})"
+        else:
+            link_md = f"[{dname} (未下載)]({a['download_url']})"
+
+        # 如果有 OCR 內容，以內容為主，連結為輔
+        if a.get("ocr_text"):
+            safe_ocr = mask_func(a["ocr_text"]).replace("\n", f"\n{indent_level}> ")
+            return f"{indent_level}> 🖼️ **內容分析** (📎 {link_md}):\n{indent_level}> {safe_ocr}"
+        else:
+            # 如果沒有 OCR 內容 (例如非圖片檔)，維持原樣顯示連結
+            return f"{indent_level}📎 {link_md}"
 
     # 1. Metadata
     safe_title = mask_func(t["name"])
@@ -46,78 +101,87 @@ def render_markdown(data, mask_func):
 
     # 2. 標題與基本資訊
     md.append(f"# {'✅' if t['completed'] else '🔲'} {safe_title}")
-    # 這裡的 PROJECT_ID 無法直接取得，可以從 permalink 判斷或忽略連結
-    # 為了簡化，若 metadata 沒有 permalink_url，可以拼出一個通用的連結
+
+    # 基本資訊連結處理，如果是連到附件的，就展開
+    # 但通常 permalink 是連到 Task 本身，所以維持原樣
+    plink = f"https://app.asana.com/0/{t.get('memberships', [{}])[0].get('project', {}).get('gid', '0')}/{t['gid']}"
+
+    # 這裡的 PROJECT_ID 無法直接取得，可以從 permalink 判斷或忽略連結，若 metadata 沒有 permalink_url，可以拼出一個通用的連結
     md.append(f"\n## 📌 基本資訊\n- **建立日期**: {c_at}")
     if cf_data:
         md.append("- **自訂欄位**:")
         for k, v in cf_data.items():
             md.append(f"  - {k}: `{mask_func(v)}`")
 
-    # 3. 描述
-    md.append(f"\n## 📝 任務描述\n{mask_func(t.get('notes')) or '*(無)*'}")
+    # 3. 描述(支援內嵌圖片)
+    def replace_asset_link(match):
+        """Regex 回呼函式：將 asset_id 連結替換為圖片區塊"""
 
-    # Helper: 附件渲染
-    def _render_atts(att_list, indent=""):
-        lines = []
-        for a in att_list:
-            dname = mask_func(a["name"])
-            # 建立相對路徑連結: ../attachments/filename
-            if a.get("local_path"):
-                fname = os.path.basename(a["local_path"])
-                link = f"[{dname}](../attachments/{fname})"
-            else:
-                link = f"[{dname} (未下載)]({a['download_url']})"
+        # 嘗試取得圖片 Markdown，縮排層級設為空 (因為描述通常不在 > 內)
+        img_block = get_attachment_markdown(match.group(1), indent_level="> ")
 
-            lines.append(f"{indent}- {link}")
+        return f"\n{img_block}\n" if img_block else match.group(0)
 
-            # 顯示 LLM 分析結果 (原 ocr_text)
-            if a.get("ocr_text"):
-                # 遮罩分析結果並縮排
-                safe_ocr = mask_func(a["ocr_text"]).replace("\n", " ")
-                lines.append(f"{indent}  > 🖼️ **內容分析**: {safe_ocr}")
-        return lines
+    raw_notes = mask_func(t.get("notes")) or "*(無)*"
+    processed_notes = re.sub(
+        r"https://app\.asana\.com/[^\s]*asset_id=(\d+)", replace_asset_link, raw_notes
+    )
 
-    # 4. 任務附件 (扣除留言附件後的)
-    if data.get("task_attachments"):
-        md.append("\n## 📎 任務附件")
-        md.extend(_render_atts(data["task_attachments"]))
+    md.append(f"\n## 📝 任務描述\n{processed_notes}")
 
-    # 5. 討論紀錄 (含附件歸位)
+    # 4. 討論紀錄 (支援內嵌圖片)
     if data.get("stories"):
         md.append("\n## 💬 討論紀錄")
-        story_att_map = data.get("story_attachment_map", {})
-
         for s in data["stories"]:
             if s["resource_subtype"] == "comment_added":
                 u = mask_func(s.get("created_by", {}).get("name", "User"))
-                txt = mask_func(s["text"])
-                md.append(
-                    f"> **{u} ({s['created_at'][:10]})**: {txt.replace(chr(10), '  '+chr(10))}"
+
+                # 處理留言內容
+                raw_text = mask_func(s["text"])
+
+                # 定義留言專用的替換函式 (增加縮排)
+                def replace_story_asset(match):
+                    asset_gid = match.group(1)
+                    img_block = get_attachment_markdown(asset_gid, indent_level="> ")
+                    if img_block:
+                        return f"{match.group(0)}\n>\n{img_block}\n>"
+                    return match.group(0)
+
+                processed_text = re.sub(
+                    r"https://app\.asana\.com/[^\s]*asset_id=(\d+)",
+                    replace_story_asset,
+                    raw_text,
                 )
 
-                # 檢查此留言是否有附件
-                s_gid = s["gid"]
-                if s_gid in story_att_map:
-                    md.extend(_render_atts(story_att_map[s_gid], indent="  "))
+                # 整理換行，確保每一行都有 "> "
+                final_story = processed_text.replace("\n", "\n> ")
 
-                md.append("")
+                md.append(f"> **{u} ({s['created_at'][:10]})**:\n> {final_story}\n")
 
-    # 6. 子任務
+    # 5. 子任務
     if data.get("subtasks"):
         md.append("\n---\n## 🔨 子任務")
         for i, item in enumerate(data["subtasks"], 1):
             s = item["meta"]
             md.append(f"### {i}. {mask_func(s['name'])}")
-            if s.get("notes"):
-                md.append(
-                    f"  > {mask_func(s['notes']).replace(chr(10), chr(10)+'  >')}\n"
-                )
 
-            # 子任務附件
-            if item.get("attachments"):
-                md.append("  - **附件**:")
-                md.extend(_render_atts(item["attachments"], indent="    "))
+            # 處理子任務描述的內嵌圖片
+            if s.get("notes"):
+                raw_sub_notes = mask_func(s["notes"])
+
+                # 子任務描述通常會縮排顯示
+                def replace_sub_asset(match):
+                    gid = match.group(1)
+                    blk = get_attachment_markdown(gid, indent_level="  > ")
+                    return f"{match.group(0)}\n  >\n{blk}" if blk else match.group(0)
+
+                proc_sub_notes = re.sub(
+                    r"https://app\.asana\.com/[^\s]*asset_id=(\d+)",
+                    replace_sub_asset,
+                    raw_sub_notes,
+                )
+                # 補上縮排
+                md.append(f"  > {proc_sub_notes.replace(chr(10), chr(10)+'  >')}\n")
 
             # 子任務留言
             if item.get("stories"):
@@ -126,7 +190,49 @@ def render_markdown(data, mask_func):
                     if sc["resource_subtype"] == "comment_added":
                         su = mask_func(sc.get("created_by", {}).get("name", "U"))
                         stxt = mask_func(sc["text"])
-                        md.append(f"    - **{su}**: {stxt.replace(chr(10), ' ')}")
+
+                        # 子任務留言圖片處理
+                        def replace_sub_story(m):
+                            blk = get_attachment_markdown(
+                                m.group(1), indent_level="    "
+                            )
+                            return f"{m.group(0)}\n{blk}" if blk else m.group(0)
+
+                        proc_stxt = re.sub(r"asset_id=(\d+)", replace_sub_story, stxt)
+
+                        md.append(f"    - **{su}**: {proc_stxt.replace(chr(10), ' ')}")
             md.append("")
+    # 6. 剩餘附件總覽 (扣除留言附件後的)
+    all_att_objects = []
+    if data.get("task_attachments"):
+        all_att_objects.extend(data["task_attachments"])
+    if data.get("story_attachment_map"):
+        for alist in data["story_attachment_map"].values():
+            all_att_objects.extend(alist)
+
+    # 過濾出未使用的 GID
+    remaining_atts = [a for a in all_att_objects if a["gid"] not in rendered_gids]
+
+    if remaining_atts:
+        md.append("\n## 📎 其他附件")
+        for a in remaining_atts:
+            # 這裡呼叫 get_attachment_markdown，但 indent 設為空
+            # 因為這是在最外層列表
+            # 注意：這裡會重複加入 rendered_gids，但不影響結果
+
+            dname = mask_func(a["name"])
+            if a.get("local_path"):
+                fname = os.path.basename(a["local_path"])
+                link = f"[{dname}](../attachments/{fname})"
+            else:
+                link = f"[{dname} (未下載)]({a['download_url']})"
+
+            md.append(f"- {link}")
+            # 可選擇是否秀出總覽區的 OCR內容
+            """
+            if a.get('ocr_text'):
+                safe_ocr = mask_func(a['ocr_text']).replace('\n', ' ')
+                md.append(f"  > 🖼️ **簡要**: {safe_ocr[:50]}...") # 只秀前50字摘要
+            """
 
     return md

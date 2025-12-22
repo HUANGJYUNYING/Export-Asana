@@ -2,6 +2,7 @@ import os
 import json
 import glob
 import sys
+import re
 from asana import Configuration, ApiClient
 
 import config
@@ -11,6 +12,35 @@ import llm_processor
 
 RAW_DIR = os.path.join(os.path.expanduser("~"), "Downloads", "Asana_Raw_Data")
 KB_DIR = os.path.join(os.path.expanduser("~"), "Downloads", "Asana_Knowledge_Base")
+
+
+def protect_asana_links(text):
+    """
+    將 Asana 附件連結替換為特殊 Placeholder，避免被 LLM 遮罩成 [LINK]
+    Target: https://app.asana.com/.../get_asset?asset_id=123456
+    Result: <<<ASSET_123456>>>
+    """
+    if not text:
+        return text
+    # Regex 抓取 asset_id
+    pattern = r"https://app\.asana\.com/[^\s]*asset_id=(\d+)"
+    return re.sub(pattern, r"<<<ASSET_\1>>>", text)
+
+
+def restore_asana_links(text):
+    """
+    將 Placeholder 還原回原始連結，以便 markdown_render 進行處理
+    Target: <<<ASSET_123456>>>
+    Result: https://app.asana.com/app/asana/-/get_asset?asset_id=123456
+    """
+    if not text:
+        return text
+    # 還原回標準 Asana Asset URL 格式 (這格式是固定的)
+    return re.sub(
+        r"<<<ASSET_(\d+)>>>",
+        r"https://app.asana.com/app/asana/-/get_asset?asset_id=\1",
+        text,
+    )
 
 
 def collect_texts_to_mask(data):
@@ -24,8 +54,7 @@ def collect_texts_to_mask(data):
     if t.get("name"):
         texts.add(t["name"])
     if t.get("notes"):
-        texts.add(t["notes"])
-
+        texts.add(protect_asana_links(t["notes"]))
     # 自訂欄位
     if t.get("custom_fields"):
         for cf in t["custom_fields"]:
@@ -44,7 +73,7 @@ def collect_texts_to_mask(data):
     if data.get("stories"):
         for s in data["stories"]:
             if s.get("text"):
-                texts.add(s["text"])
+                texts.add(protect_asana_links(s["text"]))
             user_name = (s.get("created_by") or {}).get("name")
             if user_name:
                 texts.add(user_name)
@@ -56,7 +85,7 @@ def collect_texts_to_mask(data):
             if sm.get("name"):
                 texts.add(sm["name"])
             if sm.get("notes"):
-                texts.add(sm["notes"])
+                texts.add(protect_asana_links(sm["notes"]))
 
             # 子任務附件
             if sub.get("attachments"):
@@ -70,7 +99,7 @@ def collect_texts_to_mask(data):
             if sub.get("stories"):
                 for ss in sub["stories"]:
                     if ss.get("text"):
-                        texts.add(ss["text"])
+                        texts.add(protect_asana_links(ss["text"]))
                     sub_user_name = (ss.get("created_by") or {}).get("name")
                     if sub_user_name:
                         texts.add(sub_user_name)
@@ -95,7 +124,7 @@ def run_process(target_proj_name=None):
         if not projects:
             print("❌ 無專案資料")
             return
-        print("\n📋 [Stage 2] 資料處理與生成")
+        print("\n📋 資料處理與生成")
         for i, p in enumerate(projects):
             print(f"  {i+1}) {p}")
         try:
@@ -134,7 +163,7 @@ def run_process(target_proj_name=None):
             # 1. 收集所有字串
             all_texts = collect_texts_to_mask(data)
 
-            # 2. 一次性送給 LLM(讓llm_processor 內部自動分批處理以符合 token 限制)
+            # 2. 一次性送給 LLM(讓llm_processor 內部自動分批處理以符合 token 限制, LLM 會看到 <<<ASSET_123>>> 並保留它)
             mask_lookup = llm_processor.mask_batch_texts(all_texts)
 
         # 3. 定義快速查找函式
@@ -143,11 +172,20 @@ def run_process(target_proj_name=None):
                 return ""
             if not config.ENABLE_LLM_ANALYSIS:
                 return txt
-            # 查表，查不到回傳原值
-            return mask_lookup.get(txt, txt)
+
+            # A. 先保護傳入的文字 (因為 lookup key 是保護過的)
+            protected_txt = protect_asana_links(txt)
+
+            # B. 查表取得遮罩後結果
+            masked_txt = mask_lookup.get(protected_txt, protected_txt)
+
+            # C. 還原連結 (讓 markdown_render 能讀到 ID)
+            final_txt = restore_asana_links(masked_txt)
+
+            return final_txt
 
         # 渲染與存檔
-        md_lines = markdown_render.render_markdown(data, mask_func=_mask)
+        md_lines = markdown_render.render_markdown(data, _mask)
 
         # Raw Data 相對路徑
         final_md_lines = []
@@ -156,6 +194,7 @@ def run_process(target_proj_name=None):
             line = line.replace("../attachments/", path_prefix)
             final_md_lines.append(line)
 
+        final_md_content = "\n".join(final_md_lines)
         # 存檔
         sec_dir = os.path.join(output_proj_path, data["section_name"])
         os.makedirs(sec_dir, exist_ok=True)
@@ -179,8 +218,8 @@ def run_process(target_proj_name=None):
                     preview_stories.append(f"{u}: {txt}")
 
             utils.post_masking_preview(
-                client, t["gid"], safe_title, _mask(t.get("notes", "")), preview_stories
-            )
+                client, t["gid"], final_md_content
+            )  # 直接傳送檔案內容
 
     print(f"\n✅ 處理完成！")
 
