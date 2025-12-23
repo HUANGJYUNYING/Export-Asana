@@ -110,3 +110,24 @@ def post_masking_preview(client, task_gid, markdown_content):
 
     except Exception as e:
         print(f"   ❌ 上傳預覽失敗: {e}")
+
+
+def update_task_custom_field(tasks_api, task_gid, field_gid, date_value):
+    """
+    寫回 Asana：更新指定自訂欄位的日期
+    """
+    try:
+        body = {
+            "data": {
+                "custom_fields": {
+                    field_gid: {"date": date_value}  # 注意 Asana date 格式 YYYY-MM-DD
+                }
+            }
+        }
+        # 使用 SDK 的 update_task 方法
+        tasks_api.update_task(task_gid=str(task_gid), body=body, opts={})
+        print(f"   💾 [Write-Back] 已回寫效期 {date_value} 至任務 {task_gid}")
+        return True
+    except Exception as e:
+        print(f"   ❌ 回寫失敗: {e}")
+        return False

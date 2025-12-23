@@ -232,6 +232,54 @@ def run_fetch():
 
         tid = t["gid"]
 
+        # 效期檢查與回寫機制 (SSOT)
+
+        target_expiry_gid = None
+        current_expiry_val = None
+
+        # 1. 動態查找：在該任務的 custom_fields 中尋找目標欄位
+        if t.get("custom_fields"):
+            for cf in t["custom_fields"]:
+                # 比對名稱 (從 config 讀取，例如 "知識截止日")
+                if cf["name"] == config.EXPIRY_FIELD_NAME:
+                    target_expiry_gid = cf["gid"]
+                    # 取得目前的值 (可能是 None, 或者 dict 包含 date)
+                    # Asana API 回傳結構通常是 cf['display_value'] (字串) 或 cf['date_value'] (物件)
+                    # 這裡我們先看 display_value 是否有值
+                    current_expiry_val = cf.get("display_value")
+                    break
+
+        # 2. 判斷邏輯
+        final_expiry_date = None
+
+        if target_expiry_gid:
+            if current_expiry_val:
+                # A. 已經有值 -> 直接使用
+                final_expiry_date = current_expiry_val
+            else:
+                # B. 為空值 -> 推算 1 年後 -> 寫回 Asana
+                c_at = t["created_at"][:10]
+                c_date = datetime.datetime.strptime(c_at, "%Y-%m-%d")
+                new_expiry_date = (c_date + datetime.timedelta(days=365)).strftime(
+                    "%Y-%m-%d"
+                )
+
+                # 執行寫回
+                utils.update_task_custom_field(
+                    apis.tasks, tid, target_expiry_gid, new_expiry_date
+                )
+
+                # 更新記憶體中的資料，確保存入 JSON 的是新日期
+                final_expiry_date = new_expiry_date
+            # 手動更新 t 物件內的 custom_fields 顯示值，以便後續 process_data 讀到最新的
+            for cf in t["custom_fields"]:
+                if cf["gid"] == target_expiry_gid:
+                    cf["display_value"] = new_expiry_date
+                    break
+
+        # (可選) 將計算出的 final_expiry_date 塞入 t 的一個暫存欄位，方便後續取用
+        t["calculated_expiry_date"] = final_expiry_date
+
         try:
             task_attachments, story_attachment_map, stories, subtasks = (
                 asana_fetch.fetch_task_context(tid, apis, att_dir)

@@ -1,4 +1,4 @@
-# 檔案用途：封裝 Asana API 相關取數邏輯（含網路/I/O 副作用）。
+# 檔案用途：封裝 Asana API 相關取數邏輯
 
 from typing import Dict, List, Tuple
 from asana.rest import ApiException
@@ -15,49 +15,6 @@ def _process_attachments_with_llm(
     """
     內部輔助函式：批次處理附件列表
     動作：1. 下載檔案  2. 呼叫 GPT-4o-mini 分析  3. 封裝資料
-    """
-    processed_list = []
-
-    for att in api_attachments:
-        att = utils.ensure_dict(att)
-
-        # 1. 下載檔案 (並取得本地路徑)
-        # utils.process_attachment_link 會回傳 (markdown_link, local_path)
-        _, local_path = utils.process_attachment_link(att, parent_gid, save_dir)
-
-        # 2. 執行 LLM 分析 (僅當有本地檔案且設定開啟時)
-        analysis_result = None
-        if local_path and config.DOWNLOAD_ATTACHMENTS:
-            # 呼叫 GPT-4o-mini
-            analysis_result = llm_processor.analyze_image(local_path)
-
-        # 3. 封裝資料為 AttachmentData 物件，讓後續的流程直接用 .ocr_text 拿到 AI 的分析結果
-        processed_list.append(
-            AttachmentData(
-                gid=att["gid"],
-                name=att["name"],
-                download_url=att.get("download_url"),
-                local_path=local_path,
-                ocr_text=analysis_result,
-            )
-        )
-
-    return processed_list
-
-
-def _process_attachments_with_llm(
-    api_attachments: List[dict], parent_gid: str, save_dir: str
-) -> List[AttachmentData]:
-    """
-    取得單一任務的留言、附件、留言附件對應、子任務完整內容。
-
-    Args:
-        task_gid (str): 任務 GID。
-        apis (AsanaApis): Asana API client 集合。
-
-    Returns:
-        Tuple[List[dict], Dict[str, List[dict]], List[dict], List[dict]]:
-            (task_attachments, story_attachment_map, stories, full_subs)
     """
     processed_list = []
 

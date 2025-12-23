@@ -3,6 +3,7 @@ import datetime
 import os
 import utils
 import re
+import config
 
 
 def render_markdown(data, mask_func):
@@ -72,9 +73,23 @@ def render_markdown(data, mask_func):
     # 1. Metadata
     safe_title = mask_func(t["name"])
     c_at = t["created_at"][:10]
-    exp = (
-        datetime.datetime.strptime(c_at, "%Y-%m-%d") + datetime.timedelta(days=365)
-    ).strftime("%Y-%m-%d")
+    expiry_date_str = None
+
+    # 先找看看有沒有這個欄位值
+    if t.get("custom_fields"):
+        for cf in t["custom_fields"]:
+            # 這裡可以用名稱判斷 (需確保名稱跟 Asana 一致)
+            # 或者在 fetch_raw 時我們有把計算結果放在 t['calculated_expiry_date'] 也可以用
+            if cf["name"] == config.EXPIRY_FIELD_NAME and cf.get("display_value"):
+                expiry_date_str = cf["display_value"]
+                break
+
+    # 如果真的沒找到 (例如該專案沒這個欄位)，才用預設推算
+    if not expiry_date_str:
+        expiry_date_str = (
+            datetime.datetime.strptime(c_at, "%Y-%m-%d") + datetime.timedelta(days=365)
+        ).strftime("%Y-%m-%d")
+
     status_str = "completed" if t.get("completed") else "active"
 
     # 提取自訂欄位
@@ -92,7 +107,7 @@ def render_markdown(data, mask_func):
         f"status: {status_str}",
         f"created_date: {c_at}",
         f"modified_at: {t.get('modified_at')}",
-        f"expiry_date: {exp}",
+        f"expiry_date: {expiry_date_str}",
         f"section: \"{data['section_name']}\"",
     ]
     for k, v in cf_data.items():

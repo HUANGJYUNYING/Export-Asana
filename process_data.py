@@ -10,10 +10,6 @@ import utils
 import markdown_render
 import llm_processor
 
-RAW_DIR = os.path.join(os.path.expanduser("~"), "Downloads", "Asana_Raw_Data")
-KB_DIR = os.path.join(os.path.expanduser("~"), "Downloads", "Asana_Knowledge_Base")
-
-
 def protect_asana_links(text):
     """
     將 Asana 附件連結替換為特殊 Placeholder，避免被 LLM 遮罩成 [LINK]

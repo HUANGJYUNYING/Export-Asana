@@ -54,7 +54,6 @@ def main():
             generate_qa.run_qa_generation()
 
         elif choice == "q":
-            x = int(17)
             print("👋 再見！")
             sys.exit()
 
