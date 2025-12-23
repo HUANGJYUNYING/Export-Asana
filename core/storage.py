@@ -3,7 +3,7 @@
 import os
 from typing import List
 
-import utils
+from core import utils # Updated import
 
 
 def build_markdown_filename(task: dict) -> str:

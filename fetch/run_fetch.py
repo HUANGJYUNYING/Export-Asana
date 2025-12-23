@@ -10,11 +10,9 @@ from asana.api.stories_api import StoriesApi
 from asana.api.attachments_api import AttachmentsApi
 from asana.api.sections_api import SectionsApi
 
-import config
-import utils
-import asana_fetch
-from sync_manager import SyncManager
-from models import AsanaApis
+from core import config, utils
+from core.models import AsanaApis
+from fetch import asana_api, sync_manager
 
 
 # JSON 編碼器：處理 dataclass (AttachmentData) 轉 dict
@@ -62,7 +60,7 @@ def run_fetch():
         AttachmentsApi(client),
         SectionsApi(client),
     )
-    sync_mgr = SyncManager()
+    sync_mgr = sync_manager.SyncManager()
 
     print(f"⏳ 連線至 [{selected['name']}]...")
 
@@ -190,7 +188,8 @@ def run_fetch():
         return None
 
     # 資料夾路徑設定
-    raw_root = os.path.join(os.path.expanduser("~"), "Downloads", "Asana_Raw_Data")
+    # Use config for raw root if possible or just use what config defines
+    # config.RAW_DIR is defined.
     safe_proj_name = utils.clean_filename(proj_name)
     proj_dir = os.path.join(config.RAW_DIR, safe_proj_name)
     att_dir = os.path.join(proj_dir, "attachments")
@@ -267,7 +266,7 @@ def run_fetch():
             # 手動更新 t 物件內的 custom_fields 顯示值，以便後續 process_data 讀到最新的
             for cf in t["custom_fields"]:
                 if cf["gid"] == target_expiry_gid:
-                    cf["display_value"] = new_expiry_date
+                    cf["display_value"] = final_expiry_date
                     break
 
         # (可選) 將計算出的 final_expiry_date 塞入 t 的一個暫存欄位，方便後續取用
@@ -275,9 +274,10 @@ def run_fetch():
 
         try:
             task_attachments, story_attachment_map, stories, subtasks = (
-                asana_fetch.fetch_task_context(tid, apis, att_dir)
+                asana_api.fetch_task_context(tid, apis, att_dir)
             )
 
+            # Re-calculate section (redundant but safe)
             sec_gid = next(
                 (
                     m["section"]["gid"]

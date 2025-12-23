@@ -3,10 +3,9 @@
 from typing import Dict, List, Tuple
 from asana.rest import ApiException
 
-import utils
-from models import AsanaApis, AttachmentData
-import config
-import llm_processor
+from core import utils, config
+from core.models import AsanaApis, AttachmentData
+from services import llm_processor
 
 
 def _process_attachments_with_llm(

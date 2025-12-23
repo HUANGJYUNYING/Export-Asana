@@ -4,8 +4,8 @@ import requests
 import json
 import math
 from dotenv import load_dotenv
-import config
-import openai_client
+from core import config
+from services import openai_client
 
 load_dotenv()
 
@@ -53,6 +53,7 @@ def analyze_image(image_path):
     if not b64_img:
         return None
 
+    # Note: Prompt could be moved to a separate file, but keeping here for now.
     system_prompt = """
     ```markdown
     你是一名金融與保險業專用的資安與法遵導向 AI 助手，負責協助企業進行圖片內容分析、事件紀錄整理與內部知識庫建置。  
@@ -164,7 +165,7 @@ def analyze_image(image_path):
 
     請回傳一個 JSON 物件，Key 保持不變，Value 為遮罩後的文字。  
     IMPORTANT: You must output valid JSON format.
-```
+    ```
 
     """
 

@@ -1,10 +1,11 @@
 import re
 import os
 import requests
-import config  # 引入設定檔
+from core import config  # Updated import
 from typing import List
 from asana import ApiClient, Configuration
 from asana.api.stories_api import StoriesApi
+from asana.api.tasks_api import TasksApi
 
 
 def ensure_dict(obj):
@@ -112,22 +113,21 @@ def post_masking_preview(client, task_gid, markdown_content):
         print(f"   ❌ 上傳預覽失敗: {e}")
 
 
-def update_task_custom_field(tasks_api, task_gid, field_gid, date_value):
+def update_task_custom_field(tasks_api: TasksApi, task_gid: str, field_gid: str, value: str):
     """
-    寫回 Asana：更新指定自訂欄位的日期
+    更新任務的自訂欄位 (Text or Date)
     """
+    if not field_gid or not value:
+        return
+
     try:
         body = {
             "data": {
                 "custom_fields": {
-                    field_gid: {"date": date_value}  # 注意 Asana date 格式 YYYY-MM-DD
+                    field_gid: value
                 }
             }
         }
-        # 使用 SDK 的 update_task 方法
-        tasks_api.update_task(task_gid=str(task_gid), body=body, opts={})
-        print(f"   💾 [Write-Back] 已回寫效期 {date_value} 至任務 {task_gid}")
-        return True
+        tasks_api.update_task(task_gid, body)
     except Exception as e:
-        print(f"   ❌ 回寫失敗: {e}")
-        return False
+        print(f"⚠️ 自訂欄位更新失敗 ({field_gid}={value}): {e}")

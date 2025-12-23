@@ -5,10 +5,10 @@ import sys
 import re
 from asana import Configuration, ApiClient
 
-import config
-import utils
-import markdown_render
-import llm_processor
+from core import config, utils
+from process import renderer
+from services import llm_processor
+
 
 def protect_asana_links(text):
     """
@@ -63,7 +63,7 @@ def collect_texts_to_mask(data):
             if a.get("name"):
                 texts.add(a["name"])
             if a.get("ocr_text"):
-                texts.add(a["ocr_text"])
+                texts.add(a.get("ocr_text"))  # ocr_text might be None
 
     # 3. 留言
     if data.get("stories"):
@@ -181,7 +181,7 @@ def run_process(target_proj_name=None):
             return final_txt
 
         # 渲染與存檔
-        md_lines = markdown_render.render_markdown(data, _mask)
+        md_lines = renderer.render_markdown(data, _mask)
 
         # Raw Data 相對路徑
         final_md_lines = []

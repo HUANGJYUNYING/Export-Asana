@@ -2,7 +2,7 @@
 
 from openai import AzureOpenAI
 
-import config
+from core import config
 
 
 def get_azure_openai_client() -> AzureOpenAI:

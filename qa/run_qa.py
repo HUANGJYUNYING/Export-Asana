@@ -6,7 +6,8 @@ import re
 import yaml  # pip install pyyaml
 from openai import AzureOpenAI
 from dotenv import load_dotenv
-import config
+
+from core import config
 
 load_dotenv()
 
@@ -247,6 +248,7 @@ def run_qa_generation(target_proj_name=None):
                 f"## 🏷️ 標籤",
                 f"{', '.join(qa_result.get('tags', []))}",
                 "\n",
+                f"> [查看原始文件](../../processed_data/{rel_path.replace(os.sep, '/')})",
             ]
 
             with open(save_path, "w", encoding="utf-8") as f:
